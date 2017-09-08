@@ -1,0 +1,9 @@
+This is a python 3.5 based tool for statically parsing function calls and function definitions out of NASL script.
+
+To start source the setup script into your environment:  . ./setup.sh
+Then try the two test programs on a single NASL file:
+   ./tests/muriel/tester.py -f <plugin name>
+   ./tests/moses/tester.py -f <plugin name>
+
+
+To run the tests, set up the environment then invoke pytest.

@@ -1,0 +1,199 @@
+"""
+Plugin File
+"""
+
+import re
+
+class Plugin():
+    """Plugin File"""
+
+
+    tok_constants = {
+        '\'': 'S_QUOTE',
+        '"' : 'D_QUOTE',
+        '(' : 'L_PAREN',
+        ')' : 'R_PAREN',
+        '{' : 'L_BRACE',
+        '}' : 'R_BRACE',
+        '#' : 'COMMENT',
+        'if' : 'IF',
+        'include' : 'INCLUDE',
+        '!' : 'NOT',
+        'new' : 'NEW',
+        'while' : 'WHILE',
+        'for' : 'FOR',
+        '-=' : 'MINUSEQ',
+        '+=' : 'PLUSEQ',
+        '&&' : 'AND',
+        '||' : 'OR',
+        '[' : 'L_BRACKET',
+        ']' : 'R_BRACKET',
+        '.' : 'DOT',
+        '-' : 'MINUS',
+        '+' : 'PLUS',
+        '*' : 'TIMES',
+        '/' : 'DIVIDE',
+        '=' : 'EQUALS',
+        'function' : 'FUNCTION',
+        'foreach' : 'FOREACH'
+    }
+
+
+    def __init__(self, filename):
+        parts = filename.split('.')
+        last_part = len(parts) - 1
+
+        if last_part < 1 or not (parts[last_part] == "nasl" or parts[last_part] == "inc"):
+            raise Exception("Supplied file has the wrong extension '." + parts[last_part] +
+                            "' to be a NASL plugin or include")
+
+        self.file = filename
+        self.parsed = False
+
+    def _tokenize(self, line):
+        """Takes one line of NASL code and returns a list of tuples"""
+        """[token type, token value]"""
+        words = re.split('(?:\s+)|([\(\)\'"{}#!\[\]\.+\-*/])', line)
+        tokens = [[None, word] for word in words if word]
+        for token in tokens:
+            if token[1] in self.tok_constants:
+                token[0] = self.tok_constants[token[1]]
+            else:
+                token[0] = 'LITERAL'
+ 
+        return tokens
+
+    def _parse(self):
+        """Creates a crude parse tree of the plugin file.                    """
+        """                                                                  """
+        """ Obviously thie approach won't work with function references or   """
+        """ the like.                                                        """
+        parse_tree = []
+        working_tree = parse_tree
+        stack = []
+        scope_types = {
+            "namespace": "NS_DEF",
+            "object": "OBJ_DEF"
+        }
+        scope_type = ''
+        scope_name = ''
+
+        fn_def_name = ''
+        in_fn_def = False
+        in_fn_args = False
+
+        non_scope_blocks = 0
+
+        in_single_quote = False
+        in_double_quote = False
+
+        potential_fn_call = False
+        in_fn_call = False
+        fn_name = ''
+
+        with open(self.file, "r") as nasl:
+            for line in nasl:
+                for token in self._tokenize(line):
+                   #Stop processing a line when a comment is encountered
+                   if token[0] == 'COMMENT':
+                       break 
+
+                   if token[0] == 'D_QUOTE':
+                       if in_double_quote:
+                           in_double_quote = False
+                       else:
+                           in_double_quote = True
+
+                   if token[0] == 'S_QUOTE':
+                       if in_single_quote:
+                           in_single_quote = False
+                       else:
+                           in_single_quote = True
+
+                   #Ignore quoted strings
+                   if in_double_quote or in_single_quote:
+                       continue
+
+                   if not(in_fn_def or scope_type) and token[0] == 'L_BRACE':
+                       non_scope_blocks += 1 
+
+                   if scope_type:
+                       if len(scope_name) == 0:
+                           scope_name = token[1]
+                       else:
+                           if token[0] == 'L_BRACE':
+                               scope = []
+                               working_tree.append([scope_type, scope_name, scope])
+                               stack.append(working_tree)
+                               working_tree = scope
+                           #Ignore the error if an open brace doesn't follow the namespace declaration
+                           scope_name = ''
+                           scope_type = ''
+                   elif token[1] in scope_types:
+                       scope_type = scope_types[token[1]]
+
+                   if in_fn_def:
+                       if not in_fn_args:
+                           if token[0] == 'LITERAL' and not fn_def_name:
+                               fn_def_name = token[1]
+                           elif token[0] == 'L_PAREN':
+                               in_fn_args = True
+                           elif token[0] == 'L_BRACE':
+                               scope = []
+                               working_tree.append(['FN_DEF', fn_def_name, scope])
+                               stack.append(working_tree)
+                               working_tree = scope
+                               in_fn_def = False
+                               fn_def_name = ''
+                       elif token[0] == 'R_PAREN':
+                           in_fn_args = False
+                   elif token[0] == 'FUNCTION':
+                       in_fn_def = True
+
+                   if token[0] == 'R_BRACE':
+                       if non_scope_blocks:
+                           non_scope_blocks -= 1
+                       else:
+                           working_tree = stack.pop()
+
+                   if in_fn_call:
+                       if token[0] == 'R_PAREN':
+                           in_fn_call = False
+                           working_tree.append(["FN_CALL", fn_name])
+                           fn_name = ''
+ 
+                   if potential_fn_call:
+                       potential_fn_call = False
+                       if token[0] == 'L_PAREN':
+                           in_fn_call = True 
+
+                   if token[0] == 'LITERAL' and not in_fn_call and not in_fn_def:
+                       fn_name = token[1]
+                       potential_fn_call = True
+        
+        self.parsed = True
+        return parse_tree
+
+    def get_plugin_name(self) -> str:
+        """Returns the plugin name"""
+        return self.file
+
+    def _traverse(self, parse_tree, predicate, scope) -> list:
+        result = set()
+        for item in parse_tree:
+            if item[0] == "OBJ_DEF" or item[0] == "NS_DEF":
+                result = result.union(self._traverse(item[2], predicate, scope + "::" + item[1]))
+            elif item[0] == "FN_DEF":
+                result = result.union(self._traverse(item[2], predicate, scope + ":" + item[1]))
+
+            if predicate(item):
+                result.add(scope + "?" +  item[1])
+
+        return result
+
+    def get_function_calls(self) -> list:
+        """Returns a list of functions called by this plugin"""
+        tree = []
+        if not self.parsed:
+            tree = self._parse()
+        return self._traverse(tree, lambda x: x[0] == "FN_CALL", "")
